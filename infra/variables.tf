@@ -3,10 +3,21 @@ variable "project_name" {
   type        = string
 }
 
+# Supplied by the platform as TF_VAR_ssh_public_key and kept declared so the
+# matched-pair contract stays visible, but the Droplet references the key by
+# fingerprint via the data source in main.tf — DigitalOcean already holds this
+# public key at the account level.
 variable "ssh_public_key" {
-  description = "SSH public key injected into the Droplet at launch"
+  description = "SSH public key the platform registered on the DO account"
   type        = string
   sensitive   = true
+  default     = ""
+}
+
+variable "ssh_key_name" {
+  description = "Name of the platform-registered DO SSH key. Empty means derive it as udap-<project_name>, which is what the DO agent uses."
+  type        = string
+  default     = ""
 }
 
 variable "region" {
