@@ -1,0 +1,10 @@
+# udap:meta cloud=digitalocean region=nyc1 target=do-droplet
+
+user: User { shape: person; udap-type: generic.user }
+vpc: DigitalOcean NYC1 {
+  droplet: Droplet (Node.js) { shape: rectangle; udap-type: do.droplet }
+  nginx: Nginx Reverse Proxy { shape: rectangle; udap-type: generic.app }
+}
+
+user -> vpc.nginx: HTTP :80
+vpc.nginx -> vpc.droplet: proxy :3000
