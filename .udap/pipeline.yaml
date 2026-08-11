@@ -2,6 +2,14 @@ version: 1
 name: node-do-app
 vcs: github
 
+# Terraform remote state lives in a DigitalOcean Space (S3-COMPATIBLE, not AWS
+# S3). The s3 backend therefore needs the Spaces endpoint plus the
+# compatibility skips below — without them terraform talks to real AWS S3 and
+# the deploy dies at `terraform init`. The Spaces credentials are surfaced to
+# terraform under their AWS_* env names because that is what the s3 backend
+# reads; the backend region is derived from the endpoint host so the two can
+# never drift apart.
+
 stages:
   - id: lint
     kind: lint
@@ -29,8 +37,9 @@ stages:
     timeout_minutes: 30
     env:
       DIGITALOCEAN_TOKEN: ${{ secrets.DO_TOKEN }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
+      AWS_ENDPOINT_URL_S3: ${{ secrets.SPACES_ENDPOINT }}
       TF_VAR_project_name: ${{ secrets.PROJECT_NAME }}
       TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
       TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
@@ -41,10 +50,17 @@ stages:
           terraform_wrapper: false
       - name: Terraform Init
         run: |
+          host="${AWS_ENDPOINT_URL_S3#https://}"
           terraform init -input=false -reconfigure \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="bucket=${{ secrets.TF_STATE_SPACE }}" \
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
-            -backend-config="region=us-east-1"
+            -backend-config="region=${host%%.*}" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_metadata_api_check=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_s3_checksum=true" \
+            -backend-config="use_path_style=true"
         working-directory: infra
       - name: Terraform Apply
         run: terraform apply -input=false -auto-approve
@@ -54,6 +70,14 @@ stages:
     kind: configure
     needs: [provision]
     timeout_minutes: 20
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DO_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
+      AWS_ENDPOINT_URL_S3: ${{ secrets.SPACES_ENDPOINT }}
+      TF_VAR_project_name: ${{ secrets.PROJECT_NAME }}
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
     steps:
       - name: Install Ansible
         run: pip install ansible-core
@@ -70,15 +94,31 @@ stages:
           terraform_wrapper: false
       - name: Terraform Init
         run: |
+          host="${AWS_ENDPOINT_URL_S3#https://}"
           terraform init -input=false -reconfigure \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="bucket=${{ secrets.TF_STATE_SPACE }}" \
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
-            -backend-config="region=us-east-1"
+            -backend-config="region=${host%%.*}" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_metadata_api_check=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_s3_checksum=true" \
+            -backend-config="use_path_style=true"
         working-directory: infra
       - name: Get Droplet IP
         id: get_ip
         run: echo "droplet_ip=$(terraform output -raw droplet_ip)" >> "$GITHUB_OUTPUT"
         working-directory: infra
+      - name: Wait for SSH
+        run: |
+          for i in $(seq 1 30); do
+            if nc -z -w 5 "${{ steps.get_ip.outputs.droplet_ip }}" 22; then
+              echo "SSH is up"; exit 0
+            fi
+            echo "waiting for sshd ($i/30)"; sleep 10
+          done
+          echo "sshd never came up"; exit 1
       - name: Scan host key
         run: ssh-keyscan -H "${{ steps.get_ip.outputs.droplet_ip }}" >> ~/.ssh/known_hosts
       - name: Generate inventory
@@ -92,6 +132,14 @@ stages:
     kind: verify
     needs: [provision, configure]
     timeout_minutes: 10
+    env:
+      DIGITALOCEAN_TOKEN: ${{ secrets.DO_TOKEN }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
+      AWS_ENDPOINT_URL_S3: ${{ secrets.SPACES_ENDPOINT }}
+      TF_VAR_project_name: ${{ secrets.PROJECT_NAME }}
+      TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+      TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
     steps:
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -99,10 +147,17 @@ stages:
           terraform_wrapper: false
       - name: Terraform Init
         run: |
+          host="${AWS_ENDPOINT_URL_S3#https://}"
           terraform init -input=false -reconfigure \
-            -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}" \
+            -backend-config="bucket=${{ secrets.TF_STATE_SPACE }}" \
             -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
-            -backend-config="region=us-east-1"
+            -backend-config="region=${host%%.*}" \
+            -backend-config="skip_credentials_validation=true" \
+            -backend-config="skip_requesting_account_id=true" \
+            -backend-config="skip_metadata_api_check=true" \
+            -backend-config="skip_region_validation=true" \
+            -backend-config="skip_s3_checksum=true" \
+            -backend-config="use_path_style=true"
         working-directory: infra
       - name: Get Droplet IP
         id: get_ip
@@ -112,6 +167,36 @@ stages:
         run: |
           curl --fail --retry 10 --retry-delay 15 --retry-all-errors \
             http://${{ steps.get_ip.outputs.droplet_ip }}
+
+destroy:
+  env:
+    DIGITALOCEAN_TOKEN: ${{ secrets.DO_TOKEN }}
+    AWS_ACCESS_KEY_ID: ${{ secrets.SPACES_ACCESS_KEY }}
+    AWS_SECRET_ACCESS_KEY: ${{ secrets.SPACES_SECRET_KEY }}
+    AWS_ENDPOINT_URL_S3: ${{ secrets.SPACES_ENDPOINT }}
+    TF_VAR_project_name: ${{ secrets.PROJECT_NAME }}
+    TF_VAR_ssh_public_key: ${{ secrets.SSH_PUBLIC_KEY }}
+    TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
+  steps:
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_wrapper: false
+    - name: Terraform destroy
+      run: |
+        host="${AWS_ENDPOINT_URL_S3#https://}"
+        terraform init -input=false -reconfigure \
+          -backend-config="bucket=${{ secrets.TF_STATE_SPACE }}" \
+          -backend-config="key=${{ secrets.PROJECT_NAME }}/terraform.tfstate" \
+          -backend-config="region=${host%%.*}" \
+          -backend-config="skip_credentials_validation=true" \
+          -backend-config="skip_requesting_account_id=true" \
+          -backend-config="skip_metadata_api_check=true" \
+          -backend-config="skip_region_validation=true" \
+          -backend-config="skip_s3_checksum=true" \
+          -backend-config="use_path_style=true"
+        terraform destroy -input=false -auto-approve
+      working-directory: infra
 
 rollback:
   strategy: manual
