@@ -28,10 +28,18 @@
       retries: 12
       delay: 10
 
+    # No cache_valid_time: the Droplet image ships an apt cache that is young
+    # enough to look fresh but old enough to list package versions the archive
+    # has already superseded, so a skipped refresh makes the next install 404
+    # on every nginx component. The host is new on every provision, so there
+    # is nothing to gain by caching anyway.
     - name: Update apt cache
       apt:
         update_cache: true
-        cache_valid_time: 3600
+      register: apt_cache_update
+      until: apt_cache_update is succeeded
+      retries: 3
+      delay: 10
 
     - name: Install base packages
       apt:
