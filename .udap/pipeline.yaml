@@ -80,7 +80,11 @@ stages:
       TF_VAR_do_token: ${{ secrets.DO_TOKEN }}
     steps:
       - name: Install Ansible
-        run: pip install ansible-core
+        # ansible-core ships no third-party collections; npm and ufw both live
+        # in community.general, so the playbook cannot resolve them without it.
+        run: |
+          pip install ansible-core
+          ansible-galaxy collection install community.general
       - name: Write SSH key
         env:
           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}

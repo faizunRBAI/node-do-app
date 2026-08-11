@@ -62,7 +62,7 @@
         update_cache: true
 
     - name: Install PM2 globally
-      npm:
+      community.general.npm:
         name: pm2
         global: true
         state: present
@@ -171,7 +171,7 @@
       notify: Restart app
 
     - name: Install npm dependencies (as root)
-      npm:
+      community.general.npm:
         path: "{{ app_dir }}"
         ci: true
         state: present
@@ -260,19 +260,19 @@
       meta: flush_handlers
 
     - name: Configure UFW - allow SSH
-      ufw:
+      community.general.ufw:
         rule: allow
         port: "22"
         proto: tcp
 
     - name: Configure UFW - allow HTTP
-      ufw:
+      community.general.ufw:
         rule: allow
         port: "80"
         proto: tcp
 
     - name: Enable UFW
-      ufw:
+      community.general.ufw:
         state: enabled
         policy: deny
 
