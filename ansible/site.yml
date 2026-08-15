@@ -20,7 +20,7 @@
       become: false
 
     - name: Wait for apt lock to be released
-      shell: |
+      ansible.builtin.shell: |
         while fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1; do
           sleep 5
         done
@@ -28,55 +28,44 @@
       retries: 12
       delay: 10
 
-    # No cache_valid_time: the Droplet image ships an apt cache that is young
-    # enough to look fresh but old enough to list package versions the archive
-    # has already superseded, so a skipped refresh makes the next install 404
-    # on every nginx component. The host is new on every provision, so there
-    # is nothing to gain by caching anyway.
-    - name: Update apt cache
-      apt:
+    - name: Update apt cache (no cache_valid_time — host is freshly provisioned)
+      ansible.builtin.apt:
         update_cache: true
-      register: apt_cache_update
-      until: apt_cache_update is succeeded
-      retries: 3
-      delay: 10
 
     - name: Install base packages
-      apt:
+      ansible.builtin.apt:
         name:
           - curl
           - git
           - nginx
-          - ufw
         state: present
 
     - name: Add NodeSource GPG key
-      shell: |
+      ansible.builtin.shell: |
         curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
           | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
       args:
         creates: /etc/apt/keyrings/nodesource.gpg
 
     - name: Add NodeSource repository
-      apt_repository:
+      ansible.builtin.apt_repository:
         repo: "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_{{ node_version }}.x nodistro main"
         state: present
         filename: nodesource
 
     - name: Install Node.js
-      apt:
+      ansible.builtin.apt:
         name: nodejs
         state: present
         update_cache: true
 
     - name: Install PM2 globally
-      community.general.npm:
-        name: pm2
-        global: true
-        state: present
+      ansible.builtin.shell: npm install -g pm2
+      args:
+        creates: /usr/bin/pm2
 
     - name: Create app user
-      user:
+      ansible.builtin.user:
         name: "{{ app_user }}"
         system: true
         shell: /usr/sbin/nologin
@@ -84,7 +73,7 @@
         create_home: false
 
     - name: Create app directory
-      file:
+      ansible.builtin.file:
         path: "{{ app_dir }}"
         state: directory
         owner: root
@@ -126,7 +115,7 @@
         mode: "0644"
 
     - name: Create src directory on server
-      file:
+      ansible.builtin.file:
         path: "{{ app_dir }}/src"
         state: directory
         owner: root
@@ -178,54 +167,54 @@
         mode: "0644"
       notify: Restart app
 
-    - name: Install npm dependencies (as root)
-      community.general.npm:
-        path: "{{ app_dir }}"
-        ci: true
-        state: present
+    - name: Install npm dependencies
+      ansible.builtin.shell: npm ci
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: true
 
-    - name: Build NestJS application (as root)
-      shell: ./node_modules/.bin/nest build
+    - name: Build NestJS application
+      ansible.builtin.shell: ./node_modules/.bin/nest build
       args:
         chdir: "{{ app_dir }}"
       changed_when: true
 
     - name: Set ownership of app directory to app user
-      file:
+      ansible.builtin.file:
         path: "{{ app_dir }}"
         owner: "{{ app_user }}"
         group: "{{ app_user }}"
         recurse: true
 
-    - name: Start app with PM2 (as root for system-wide PM2)
-      shell: |
+    - name: Start app with PM2
+      ansible.builtin.shell: |
         pm2 describe node-do-app > /dev/null 2>&1 \
           && pm2 reload node-do-app \
           || pm2 start {{ app_dir }}/dist/main.js --name node-do-app --uid {{ app_user }} --gid {{ app_user }}
       changed_when: true
 
     - name: Save PM2 process list
-      shell: pm2 save
+      ansible.builtin.shell: pm2 save
       changed_when: true
 
     - name: Setup PM2 startup on boot
-      shell: pm2 startup systemd -u root --hp /root
+      ansible.builtin.shell: pm2 startup systemd -u root --hp /root
       register: pm2_startup
       changed_when: pm2_startup.rc == 0
 
     - name: Enable PM2 systemd service
-      shell: "{{ pm2_startup.stdout_lines | select('match', '^sudo') | first }}"
+      ansible.builtin.shell: "{{ pm2_startup.stdout_lines | select('match', '^sudo') | first }}"
       when: pm2_startup.stdout_lines | select('match', '^sudo') | list | length > 0
       changed_when: true
 
     - name: Wait for app to listen on port 3000
-      wait_for:
+      ansible.builtin.wait_for:
         port: 3000
         delay: 5
         timeout: 60
 
     - name: Configure Nginx virtual host
-      copy:
+      ansible.builtin.copy:
         dest: /etc/nginx/sites-available/node-do-app
         content: |
           server {
@@ -252,45 +241,40 @@
       notify: Reload nginx
 
     - name: Enable Nginx site
-      file:
+      ansible.builtin.file:
         src: /etc/nginx/sites-available/node-do-app
         dest: /etc/nginx/sites-enabled/node-do-app
         state: link
       notify: Reload nginx
 
     - name: Remove default Nginx site
-      file:
+      ansible.builtin.file:
         path: /etc/nginx/sites-enabled/default
         state: absent
       notify: Reload nginx
 
     - name: Flush handlers (nginx reload)
-      meta: flush_handlers
+      ansible.builtin.meta: flush_handlers
 
-    - name: Configure UFW - allow SSH
-      community.general.ufw:
-        rule: allow
-        port: "22"
-        proto: tcp
+    - name: Allow SSH via ufw
+      ansible.builtin.shell: ufw allow 22/tcp
+      changed_when: true
 
-    - name: Configure UFW - allow HTTP
-      community.general.ufw:
-        rule: allow
-        port: "80"
-        proto: tcp
+    - name: Allow HTTP via ufw
+      ansible.builtin.shell: ufw allow 80/tcp
+      changed_when: true
 
-    - name: Enable UFW
-      community.general.ufw:
-        state: enabled
-        policy: deny
+    - name: Enable ufw
+      ansible.builtin.shell: echo y | ufw enable
+      changed_when: true
 
   handlers:
     - name: Reload nginx
-      service:
+      ansible.builtin.service:
         name: nginx
         state: reloaded
 
     - name: Restart app
-      shell: |
+      ansible.builtin.shell: |
         pm2 describe node-do-app > /dev/null 2>&1 && pm2 reload node-do-app || true
       changed_when: true
